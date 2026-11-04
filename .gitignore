@@ -1,0 +1,16 @@
+# The index holds the full text of every indexed session.
+*.bin
+*.bin.*
+lock
+
+# Real transcripts never belong here; tests use synthetic ones only.
+*.jsonl
+!tests/fixtures/synthetic/**/*.jsonl
+
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.DS_Store
+.env
+.env.*
