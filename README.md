@@ -1,0 +1,73 @@
+# agent-sessidx
+
+AI コーディングエージェントの過去セッションを、「何を頼んで何をしたか」で検索するローカル CLI とスキルです。今は Claude Code の transcript（`~/.claude/projects/*/*.jsonl`）に対応しています。
+
+エージェントは作業の途中で自分から検索し、過去のセッションの依頼・触ったファイル・PR・最後の返答を読んで文脈をつかみます。要約に LLM は使いません。transcript から抜き出すだけなので、今進行中のセッションも次の検索から見つかります。
+
+## 必要なもの
+
+- Python 3.9 以上（標準ライブラリだけで動きます）
+- macOS か Linux（索引の排他に `fcntl` を使います）
+
+## インストール
+
+```bash
+git clone https://github.com/nakashidev-user/agent-sessidx.git
+cd agent-sessidx
+./install.sh
+```
+
+`install.sh` は次の2つのシンボリックリンクを作り、最後に索引を作ります。同じ名前のファイルやディレクトリがすでにあるときは、何も上書きせずに止まります。
+
+| リンク | 指す先 |
+|---|---|
+| `~/.claude/tools/agent-sessidx` | このリポジトリ |
+| `~/.claude/skills/agent-sessidx` | `skills/agent-sessidx` |
+
+## 使い方
+
+```bash
+python3 -I ~/.claude/tools/agent-sessidx/agent-sessidx.py search 請求書 再発行
+python3 -I ~/.claude/tools/agent-sessidx/agent-sessidx.py show <session-id の先頭> [--prompts 30]
+python3 -I ~/.claude/tools/agent-sessidx/agent-sessidx.py stats
+python3 -I ~/.claude/tools/agent-sessidx/agent-sessidx.py rebuild
+```
+
+| オプション | 意味 |
+|---|---|
+| `-n 8` | 表示する件数 |
+| `-p <文字列>` | プロジェクト名か cwd にこの文字列を含むセッションに絞る |
+| `--days N` | N 日以内に動いたセッションに絞る |
+| `--agent claude` | そのエージェントのセッションに絞る（今は claude だけ） |
+| `--auto` | `<scheduled-task>` で始まる定期実行のセッションも含める |
+| `--include-self` | 呼び出し元のセッションも結果に残す（今は Claude Code の `$CLAUDE_CODE_SESSION_ID` だけを見る） |
+
+Claude Code からは、スキル `agent-sessidx` として「前にやった？」「前回どうした？」のような場面で呼ばれます。
+
+## 索引について
+
+- 置き場所は `~/.claude/agent-sessidx/index.bin` で、このリポジトリの外です。
+- **索引には全セッションのタイトル・依頼の本文・サブエージェントへの委任文・最後の返答・ファイルパス・cwd・ブランチ・PR URL・transcript のパスが入ります。** 共有したりコミットしたりしないでください。`.gitignore` でも `*.bin` を除外しています。
+- 検索のたびに transcript の更新時刻とサイズを見て、変わったものだけ読み直します。
+- 作り直しにかかる時間は、手元の約7,000 transcript（5GB 超）で約5秒でした。
+
+## 検索の仕組み
+
+- 転置インデックスです。日本語は2文字ずつ（bigram）、英数字は単語単位で区切ります。snake_case と camelCase は部品にも分けます。
+- 順位は BM25（k1 1.2、b 0.5）です。その点数に、検索語の何割が当たったか、セッションの往復数、新しさの3つを掛けます。
+- 重みは、タイトル 4、最初の依頼 2、ブランチ・プロジェクト・PR 2、その他の依頼・作業中に送った依頼・サブエージェントへの委任文 1、最後の返答 1、ファイルパス 1 です。
+- `<transcript>` で始まるセッション（他のセッションを要約するために作られたコピー）は索引に入れません。
+
+## テスト
+
+```bash
+python3 -I -m unittest discover -s tests -v
+```
+
+テストはその場で作った架空の transcript だけを使います。本物の transcript をこのリポジトリに入れないでください。
+
+## 制約
+
+- 対応しているのは Claude Code だけです。エージェントを足すときは、`SOURCES` に `list`（transcript のパスを返す）と `parse`（1本を `new_session` の形に読む）を加えます。`self_env`（呼び出し元のセッション ID が入る環境変数）と `resume`（再開コマンドの書式）は任意です。
+- 文字で照合するので、言い換えには弱いです（例: 「アンケート」と「survey」）。
+- 索引に入るのは、依頼・委任文・最後の返答・ファイルパスです。会話途中の返答は入りません。
