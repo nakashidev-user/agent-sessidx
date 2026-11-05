@@ -1,0 +1,15 @@
+{
+  "name": "agent-sessidx",
+  "description": "Search past Claude Code session transcripts by what was asked and done",
+  "version": "0.1.0",
+  "author": {
+    "name": "nakashidev-user"
+  },
+  "homepage": "https://github.com/nakashidev-user/agent-sessidx",
+  "repository": "https://github.com/nakashidev-user/agent-sessidx",
+  "keywords": [
+    "sessions",
+    "transcripts",
+    "search"
+  ]
+}
