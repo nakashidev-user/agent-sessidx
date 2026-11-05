@@ -32,7 +32,7 @@ cd agent-sessidx
 ./install.sh
 ```
 
-`install.sh` は次の2つのシンボリックリンクを作り、最後に索引を作ります。同じ名前のファイルやディレクトリがすでにあるときは、何も上書きせずに止まります。clone した作業ツリーをそのまま使うので、手元で CLI を直しながら試すときはこちらが向いています。プラグインと両方入れると、同じスキルが2つ並ぶのでどちらか1つにしてください。
+`install.sh` は次の2つのシンボリックリンクを作り、最後に索引を作ります。同じ名前のファイルやディレクトリがすでにあるときは、何も上書きせずに止まります。clone した作業ツリーをそのまま使うので、手元で CLI を直しながら試すときはこちらが向いています。プラグインと両方入れると、同じスキルが2つ並ぶのでどちらか1つにしてください。`install.sh` からプラグインへ移るときは、`~/.claude/tools/agent-sessidx` と `~/.claude/skills/agent-sessidx` の2つのリンクを外してからプラグインを入れます。
 
 | リンク | 指す先 |
 |---|---|
@@ -59,7 +59,7 @@ python3 -I ~/.claude/tools/agent-sessidx/agent-sessidx.py rebuild
 | `--auto` | `<scheduled-task>` で始まる定期実行のセッションも含める |
 | `--include-self` | 呼び出し元のセッションも結果に残す（今は Claude Code の `$CLAUDE_CODE_SESSION_ID` だけを見る） |
 
-Claude Code からは、スキル `agent-sessidx` として「前にやった？」「前回どうした？」のような場面で呼ばれます。
+Claude Code からは、スキル `agent-sessidx`（プラグインで入れたときは `agent-sessidx:agent-sessidx`）として「前にやった？」「前回どうした？」のような場面で呼ばれます。
 
 ## 索引について
 
