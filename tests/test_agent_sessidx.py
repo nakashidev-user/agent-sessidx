@@ -177,6 +177,26 @@ class SessionIndexTest(unittest.TestCase):
                 os.environ["CLAUDE_CODE_SESSION_ID"] = env
         self.assertEqual(out.getvalue().strip(), "no match")
 
+    def test_cli_records_each_search_and_show_in_the_usage_log(self):
+        # The log is how the owner learns whether agents actually reach for the tool, so every lookup must leave a line, failed ones included.
+        argv = sys.argv
+        try:
+            for args in (["search", "請求書"], ["show", "aaaa"], ["show", "zzzz"]):
+                sys.argv = ["agent-sessidx", *args]
+                with redirect_stdout(io.StringIO()):
+                    try:
+                        S.main()
+                    except SystemExit:
+                        pass
+        finally:
+            sys.argv = argv
+        with open(os.path.join(S.INDEX_DIR, "usage.jsonl"), encoding="utf-8") as f:
+            entries = [json.loads(x) for x in f]
+        self.assertEqual([(e["cmd"], e["arg"], e["ok"]) for e in entries],
+                         [("search", "請求書", True), ("show", "aaaa", True), ("show", "zzzz", False)])
+        self.assertIn("aaaa1111", entries[0]["ids"])
+        self.assertEqual(entries[1]["ids"], ["aaaa1111"])
+
     def test_show_prints_an_extractive_summary(self):
         # show is the summary an agent reads before relying on a past session.
         S.refresh()

@@ -545,15 +545,41 @@ def main():
     sub.add_parser("stats")
     a = ap.parse_args()
 
-    idx = refresh(force=a.cmd == "rebuild")
-    if a.cmd == "search":
-        exclude = () if a.include_self else calling_session_ids()
-        print_hits(search(idx, " ".join(a.query), a.n, a.project, a.days, a.auto, exclude, a.agent))
-    elif a.cmd == "show":
-        show(idx, a.session_id, a.prompts)
-    else:
-        stats(idx)
+    logged = {"search": " ".join(getattr(a, "query", [])), "show": getattr(a, "session_id", "")}
+    top, ok = [], False
+    try:
+        idx = refresh(force=a.cmd == "rebuild")
+        if a.cmd == "search":
+            exclude = () if a.include_self else calling_session_ids()
+            ranked = search(idx, " ".join(a.query), a.n, a.project, a.days, a.auto, exclude, a.agent)
+            print_hits(ranked)
+            top = [m["id"] for _, m in ranked]
+        elif a.cmd == "show":
+            top = [find_session(idx, a.session_id)["id"]]
+            show(idx, a.session_id, a.prompts)
+        else:
+            stats(idx)
+        ok = True
+    finally:
+        if a.cmd in logged:
+            log_usage(a.cmd, logged[a.cmd], top, ok)
 
+
+def log_usage(cmd, arg, ids, ok):
+    try:
+        cwd = os.getcwd()
+    except OSError:
+        cwd = None
+    entry = {"ts": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "cmd": cmd, "arg": arg, "ok": ok, "ids": ids[:3],
+             "caller": sorted(calling_session_ids()), "cwd": cwd}
+    if cmd == "search":
+        entry["hits"] = len(ids)
+    try:
+        os.makedirs(INDEX_DIR, exist_ok=True)
+        with open(os.path.join(INDEX_DIR, "usage.jsonl"), "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except OSError as e:
+        print(f"note: usage log not written: {e}", file=sys.stderr)
 
 if __name__ == "__main__":
     main()
