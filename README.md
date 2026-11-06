@@ -11,13 +11,28 @@ AI コーディングエージェントの過去セッションを、「何を�
 
 ## インストール
 
+### Claude Code のプラグインとして入れる
+
+Claude Code の中で次の2行を実行します。
+
+```
+/plugin marketplace add nakashidev-user/agent-sessidx
+/plugin install agent-sessidx@agent-sessidx
+```
+
+Claude Code 2.1.275 以降なら、`/plugin install agent-sessidx --marketplace nakashidev-user/agent-sessidx` の1行でも入ります。
+
+スキルは `agent-sessidx:agent-sessidx` という名前で入ります。CLI はプラグインの置き場所（`~/.claude/plugins/cache/agent-sessidx/agent-sessidx/<version>/agent-sessidx.py`）にあり、スキルはそこを呼びます。索引は最初の検索で作られます。
+
+### clone して `install.sh` で入れる
+
 ```bash
 git clone https://github.com/nakashidev-user/agent-sessidx.git
 cd agent-sessidx
 ./install.sh
 ```
 
-`install.sh` は次の2つのシンボリックリンクを作り、最後に索引を作ります。同じ名前のファイルやディレクトリがすでにあるときは、何も上書きせずに止まります。
+`install.sh` は次の2つのシンボリックリンクを作り、最後に索引を作ります。同じ名前のファイルやディレクトリがすでにあるときは、何も上書きせずに止まります。clone した作業ツリーをそのまま使うので、手元で CLI を直しながら試すときはこちらが向いています。プラグインと両方入れると、同じスキルが2つ並ぶのでどちらか1つにしてください。`install.sh` からプラグインへ移るときは、`~/.claude/tools/agent-sessidx` と `~/.claude/skills/agent-sessidx` の2つのリンクを外してからプラグインを入れます。
 
 | リンク | 指す先 |
 |---|---|
@@ -25,6 +40,8 @@ cd agent-sessidx
 | `~/.claude/skills/agent-sessidx` | `skills/agent-sessidx` |
 
 ## 使い方
+
+次の例は `install.sh` で入れたときのパスです。プラグインで入れたときは `~/.claude/tools/agent-sessidx/` をプラグインの置き場所に読み替えてください。
 
 ```bash
 python3 -I ~/.claude/tools/agent-sessidx/agent-sessidx.py search 請求書 再発行
@@ -42,7 +59,7 @@ python3 -I ~/.claude/tools/agent-sessidx/agent-sessidx.py rebuild
 | `--auto` | `<scheduled-task>` で始まる定期実行のセッションも含める |
 | `--include-self` | 呼び出し元のセッションも結果に残す（今は Claude Code の `$CLAUDE_CODE_SESSION_ID` だけを見る） |
 
-Claude Code からは、スキル `agent-sessidx` として「前にやった？」「前回どうした？」のような場面で呼ばれます。
+Claude Code からは、スキル `agent-sessidx`（プラグインで入れたときは `agent-sessidx:agent-sessidx`）として「前にやった？」「前回どうした？」のような場面で呼ばれます。
 
 ## 索引について
 

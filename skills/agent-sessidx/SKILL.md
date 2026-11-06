@@ -10,10 +10,10 @@ Searches past sessions in `~/.claude/projects/*/*.jsonl`. The index lives in `~/
 ## Commands
 
 ```bash
-python3 -I ~/.claude/tools/agent-sessidx/agent-sessidx.py search <words…> [-n 8] [-p <project-or-cwd-substring>] [--days N] [--auto]
-python3 -I ~/.claude/tools/agent-sessidx/agent-sessidx.py show <session-id-prefix> [--prompts 30]
-python3 -I ~/.claude/tools/agent-sessidx/agent-sessidx.py stats
-python3 -I ~/.claude/tools/agent-sessidx/agent-sessidx.py rebuild
+python3 -I "${CLAUDE_SKILL_DIR}/../../agent-sessidx.py" search <words…> [-n 8] [-p <project-or-cwd-substring>] [--days N] [--auto]
+python3 -I "${CLAUDE_SKILL_DIR}/../../agent-sessidx.py" show <session-id-prefix> [--prompts 30]
+python3 -I "${CLAUDE_SKILL_DIR}/../../agent-sessidx.py" stats
+python3 -I "${CLAUDE_SKILL_DIR}/../../agent-sessidx.py" rebuild
 ```
 
 ## How to use it
