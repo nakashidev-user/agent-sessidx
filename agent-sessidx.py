@@ -18,7 +18,7 @@ CLAUDE_PROJECTS = os.path.expanduser("~/.claude/projects")
 INDEX_DIR = os.path.expanduser("~/.claude/agent-sessidx")
 INDEX_PATH = os.path.join(INDEX_DIR, "index.bin")
 LOCK_PATH = os.path.join(INDEX_DIR, "lock")
-VERSION = 6
+VERSION = 7
 EXCLUDE_PROJECT = ("observer-sessions",)
 
 W_TITLE, W_FIRST, W_PROMPT, W_LAST_REPLY, W_FILE, W_META = 4, 2, 1, 1, 1, 2
@@ -102,11 +102,12 @@ def worth_parsing(line):
 def new_session(path, agent, session_id, project):
     return {"id": session_id, "agent": agent, "path": path, "project": project, "cwd": None, "branch": None,
             "entrypoint": None, "start": None, "end": None, "title": None, "prompts": [], "delegations": [],
-            "files": Counter(), "prs": [], "last_reply": "", "bad_lines": 0}
+            "files": Counter(), "prs": [], "last_reply": "", "bad_lines": 0, "opening": ""}
 
 
 def parse_claude(path):
     prompts, delegations, files, prs = [], [], Counter(), []
+    opening = ""  # first prompt before command substitution, so copies and scheduled tasks are recognised even if they quote a slash command
     title = custom_title = cwd = branch = entrypoint = None
     start = end = None
     last_reply = ""
@@ -137,6 +138,7 @@ def parse_claude(path):
                 if att.get("type") == "queued_command" and isinstance(att.get("prompt"), str) and not d.get("isSidechain"):
                     p = clean_prompt(att["prompt"])
                     if p:
+                        opening = opening if prompts else SYSTEM_REMINDER_RE.sub("", att["prompt"]).strip()
                         prompts.append(p)
             elif kind == "user":
                 if d.get("isMeta") or d.get("isSidechain") or d.get("isCompactSummary"):
@@ -147,9 +149,10 @@ def parse_claude(path):
                 content = d.get("message", {}).get("content")
                 parts = [content] if isinstance(content, str) else [
                     p.get("text", "") for p in content or [] if isinstance(p, dict) and p.get("type") == "text"]
-                for p in parts:
-                    p = clean_prompt(p)
+                for raw in parts:
+                    p = clean_prompt(raw)
                     if p:
+                        opening = opening if prompts else SYSTEM_REMINDER_RE.sub("", raw).strip()
                         prompts.append(p)
             elif kind == "assistant":
                 texts = []
@@ -169,7 +172,7 @@ def parse_claude(path):
                     last_reply = "\n".join(texts)
     s = new_session(path, "claude", os.path.basename(path)[:-6], os.path.basename(os.path.dirname(path)))
     s.update(cwd=cwd, branch=branch, entrypoint=entrypoint, start=start, end=end, title=custom_title or title,
-             prompts=prompts, delegations=delegations, files=files, prs=prs, last_reply=last_reply, bad_lines=bad_lines)
+             prompts=prompts, delegations=delegations, files=files, prs=prs, last_reply=last_reply, bad_lines=bad_lines, opening=opening)
     return s
 
 
@@ -202,7 +205,7 @@ def summarize(s):
         "first": s["prompts"][0][:300] if s["prompts"] else "",
         "last": s["prompts"][-1][:300] if len(s["prompts"]) > 1 else "",
         "n_prompts": len(s["prompts"]), "prs": s["prs"], "bad_lines": s["bad_lines"],
-        "auto": bool(s["prompts"]) and s["prompts"][0].startswith(AUTO_PREFIX),
+        "auto": s["opening"].startswith(AUTO_PREFIX),
     }
 
 
@@ -234,7 +237,7 @@ def index_one(path, agent):
         s = parse_session(path, agent)
     except FileNotFoundError:
         return path, None, {}
-    if s["prompts"] and s["prompts"][0].startswith(COPY_PREFIX):
+    if s["opening"].startswith(COPY_PREFIX):
         return path, None, {}
     return path, summarize(s), dict(weighted_terms(s))
 
