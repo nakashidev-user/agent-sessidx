@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 import argparse
-import calendar
 import fcntl
 import json
 import marshal
@@ -260,7 +259,7 @@ def index_one(path, agent):
     try:
         s = parse_session(path, agent, for_index=True)
     except FileNotFoundError:
-        return path, None, {}
+        return path, None, None  # not recorded at all, so a file that later appears at this path is read on the next refresh
     if s["opening"].startswith(COPY_PREFIX):
         return path, None, {}
     return path, summarize(s), dict(weighted_terms(s))
@@ -371,10 +370,17 @@ class Index:
         return idx
 
 
-def list_sessions():
+def list_sessions(known=None):
+    """known is the index's file table. A transcript recorded there as a summarizer copy (doc id -1) stays a copy however it grows,
+    since that is decided by its first request alone, so it is not stat'ed; its recorded mtime and size are reused while it is still listed."""
+    known = known or {}
     out = {}
     for agent, source in SOURCES.items():
         for path in source["list"]():
+            entry = known.get(path)
+            if entry is not None and entry[2] < 0:
+                out[path] = (entry[0], entry[1], agent)
+                continue
             try:
                 st = os.stat(path)
             except FileNotFoundError:
@@ -400,13 +406,24 @@ def save_index(idx):
     os.replace(tmp, INDEX_PATH)
 
 
-def refresh(force=False):
+def session_id_of(idx, path):
+    entry = idx.files.get(path)
+    if entry is not None and entry[2] >= 0 and idx.docs[entry[2]] is not None:
+        return idx.docs[entry[2]]["id"]
+    return os.path.splitext(os.path.basename(path))[0]
+
+
+def refresh(force=False, skip_ids=()):
+    """skip_ids names sessions whose changes are left for a later call (a search that excludes the caller's own session
+    gets the same results from a stale entry); they are neither re-read nor added now."""
     os.makedirs(INDEX_DIR, exist_ok=True)
     with open(LOCK_PATH, "w") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         idx = Index() if force else load_index()
-        current = list_sessions()
+        current = list_sessions(idx.files)
         changed = [p for p, key in current.items() if tuple(idx.files.get(p, (None, None))[:2]) != key[:2]]
+        if skip_ids and not force:
+            changed = [p for p in changed if session_id_of(idx, p) not in skip_ids]
         gone = [p for p in idx.files if p not in current]
         if not changed and not gone:
             return idx
@@ -420,7 +437,8 @@ def refresh(force=False):
         else:
             results = [index_one(p, current[p][2]) for p in changed]
         for path, meta, tf in results:
-            idx.add(path, current[path][:2], meta, tf)
+            if tf is not None:
+                idx.add(path, current[path][:2], meta, tf)
         if idx.docs and (len(idx.docs) - idx.live) / len(idx.docs) > COMPACT_RATIO:
             idx = idx.compact()
         save_index(idx)
@@ -433,7 +451,16 @@ def refresh(force=False):
 
 
 def epoch(ts):
-    return calendar.timegm(time.strptime(ts[:19], "%Y-%m-%dT%H:%M:%S"))
+    """UTC seconds of ts[:19] (YYYY-MM-DDTHH:MM:SS), computed directly; calendar and _strptime cost ~14ms to import."""
+    y, mo, d = int(ts[0:4]), int(ts[5:7]), int(ts[8:10])
+    h, mi, s = int(ts[11:13]), int(ts[14:16]), int(ts[17:19])
+    if ts[4] != "-" or ts[7] != "-" or ts[10] != "T" or ts[13] != ":" or ts[16] != ":" or not 1 <= mo <= 12:
+        raise ValueError(f"bad timestamp: {ts!r}")
+    y -= mo <= 2  # count years from March so the leap day falls at the end
+    era, yoe = divmod(y, 400)
+    doy = (153 * (mo - 3 if mo > 2 else mo + 9) + 2) // 5 + d - 1
+    days = era * 146097 + yoe * 365 + yoe // 4 - yoe // 100 + doy - 719468
+    return days * 86400 + h * 3600 + mi * 60 + s
 
 
 def age_days(ts):
@@ -576,9 +603,10 @@ def main():
     logged = {"search": " ".join(getattr(a, "query", [])), "show": getattr(a, "session_id", "")}
     top, ok = [], False
     try:
-        idx = refresh(force=a.cmd == "rebuild")
+        exclude = calling_session_ids() if a.cmd == "search" and not a.include_self else ()
+        # the caller's own transcript grows with every search; it is excluded from the results, so re-reading it can wait
+        idx = refresh(force=a.cmd == "rebuild", skip_ids=exclude)
         if a.cmd == "search":
-            exclude = () if a.include_self else calling_session_ids()
             ranked = search(idx, " ".join(a.query), a.n, a.project, a.days, a.auto, exclude, a.agent)
             print_hits(ranked)
             top = [m["id"] for _, m in ranked]
