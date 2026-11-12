@@ -5,7 +5,7 @@ description: Use when the current task may build on earlier Claude Code sessions
 
 # agent-sessidx
 
-Searches past sessions in `~/.claude/projects/*/*.jsonl`. The index lives in `~/.claude/agent-sessidx/` and refreshes on every call. Only changed transcripts are re-read, so the session you are in now is searchable too.
+Searches past sessions in `~/.claude/projects/*/*.jsonl`. The index lives in `~/.claude/agent-sessidx/index-v<VERSION>.bin` (one file per index version, so installs of different versions do not overwrite each other) and refreshes on every call. Only changed transcripts are re-read, so the session you are in now is searchable too.
 
 ## Commands
 
@@ -40,7 +40,9 @@ If nothing useful comes back, try other words: the identifier instead of the Jap
 | Last assistant reply (2k chars) | 1 |
 | Paths of files read or edited | 1 |
 
-Sessions whose first prompt is `<transcript>` are summarizer copies of other sessions and are not indexed, even when they quote a slash command. `<scheduled-task>` sessions are indexed but hidden unless `--auto` is passed.
+The first user prompt skips bare slash commands with no arguments, such as `/model` or `/list-skills`; the hit's `first:` line and the weight 2 go to the first real request. Skipped commands are still indexed at weight 1 and listed by `show`. A session of only such commands keeps its first command as the first prompt.
+
+Sessions whose first prompt is `<transcript>` are summarizer copies of other sessions and are not indexed, even when they quote a slash command. Only that first prompt decides it, so indexing stops reading a copy there. `<scheduled-task>` sessions are indexed but hidden unless `--auto` is passed.
 
 Slash commands are indexed with their arguments. Compaction summaries and subagent hand-backs are not indexed.
 

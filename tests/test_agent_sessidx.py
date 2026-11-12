@@ -61,7 +61,7 @@ class SessionIndexTest(unittest.TestCase):
         self.saved = (S.CLAUDE_PROJECTS, S.INDEX_DIR, S.INDEX_PATH, S.LOCK_PATH)
         S.CLAUDE_PROJECTS = str(self.projects)
         S.INDEX_DIR = str(base / "index")
-        S.INDEX_PATH = os.path.join(S.INDEX_DIR, "index.bin")
+        S.INDEX_PATH = os.path.join(S.INDEX_DIR, os.path.basename(self.saved[2]))
         S.LOCK_PATH = os.path.join(S.INDEX_DIR, "lock")
 
         self.write("aaaa1111", [
@@ -203,6 +203,31 @@ class SessionIndexTest(unittest.TestCase):
                          [("search", "請求書", True), ("show", "aaaa", True), ("show", "zzzz", False)])
         self.assertIn("aaaa1111", entries[0]["ids"])
         self.assertEqual(entries[1]["ids"], ["aaaa1111"])
+
+    def test_an_index_left_by_another_install_is_not_overwritten(self):
+        # The plugin and the install.sh checkout can be different versions; if they shared one file, each switch between them would rebuild the whole index.
+        os.makedirs(S.INDEX_DIR, exist_ok=True)
+        legacy = Path(S.INDEX_DIR) / "index.bin"
+        legacy.write_bytes(b"index written by plugin 0.1.0")
+        self.assertEqual(self.top_ids("合鍵"), ["bbbb2222"])
+        self.assertEqual(legacy.read_bytes(), b"index written by plugin 0.1.0")
+
+    def test_a_bare_slash_command_is_not_taken_as_the_first_request(self):
+        # Sessions often open with /model or a skill name and no arguments; the request that follows is what the user remembers and what the result should show.
+        self.write("eeee5555", [
+            user("<command-name>/model</command-name>\n<command-message>model</command-message>\n<command-args></command-args>"),
+            user("在庫引当のバッチが二重に走る件を直して"),
+            assistant("直しました"),
+        ])
+        hits = S.search(S.refresh(), "在庫引当", 5)
+        self.assertEqual([m["id"] for _, m in hits], ["eeee5555"])
+        self.assertEqual(hits[0][1]["first"], "在庫引当のバッチが二重に走る件を直して")
+
+    def test_a_session_of_only_a_bare_slash_command_keeps_it_as_the_first_request(self):
+        # With nothing else asked, the command is still the only record of what the session was for.
+        self.write("ffff6666", [user("<command-name>/list-skills</command-name>\n<command-message>list-skills</command-message>")])
+        hits = S.search(S.refresh(), "list-skills", 5)
+        self.assertEqual([(m["id"], m["first"]) for _, m in hits], [("ffff6666", "/list-skills")])
 
     def test_show_prints_an_extractive_summary(self):
         # show is the summary an agent reads before relying on a past session.

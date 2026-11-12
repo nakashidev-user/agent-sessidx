@@ -12,13 +12,12 @@ import time
 import unicodedata
 from array import array
 from collections import Counter
-from concurrent.futures import ProcessPoolExecutor
 
+VERSION = 8
 CLAUDE_PROJECTS = os.path.expanduser("~/.claude/projects")
 INDEX_DIR = os.path.expanduser("~/.claude/agent-sessidx")
-INDEX_PATH = os.path.join(INDEX_DIR, "index.bin")
+INDEX_PATH = os.path.join(INDEX_DIR, f"index-v{VERSION}.bin")  # per version, so installs of different versions never overwrite each other's index
 LOCK_PATH = os.path.join(INDEX_DIR, "lock")
-VERSION = 7
 EXCLUDE_PROJECT = ("observer-sessions",)
 
 W_TITLE, W_FIRST, W_PROMPT, W_LAST_REPLY, W_FILE, W_META = 4, 2, 1, 1, 1, 2
@@ -34,6 +33,7 @@ HIRAGANA_RE = re.compile(r"^[぀-ゟー]+$")
 SYSTEM_REMINDER_RE = re.compile(r"<system-reminder>.*?</system-reminder>", re.S)
 COMMAND_NAME_RE = re.compile(r"<command-name>(.*?)</command-name>", re.S)
 COMMAND_ARGS_RE = re.compile(r"<command-args>(.*?)</command-args>", re.S)
+BARE_COMMAND_RE = re.compile(r"/[A-Za-z0-9][\w:.-]*")
 WANTED_MARKERS = tuple(b'"type":"%s"' % t for t in (b"user", b"assistant", b"ai-title", b"custom-title", b"pr-link", b"queued_command"))
 COPY_PREFIX = "<transcript>"
 AUTO_PREFIX = "<scheduled-task"
@@ -105,7 +105,8 @@ def new_session(path, agent, session_id, project):
             "files": Counter(), "prs": [], "last_reply": "", "bad_lines": 0, "opening": ""}
 
 
-def parse_claude(path):
+def parse_claude(path, stop_at_copy=False):
+    """stop_at_copy stops reading once the first prompt shows the file is a summarizer copy; the index needs nothing else from it."""
     prompts, delegations, files, prs = [], [], Counter(), []
     opening = ""  # first prompt before command substitution, so copies and scheduled tasks are recognised even if they quote a slash command
     title = custom_title = cwd = branch = entrypoint = None
@@ -170,10 +171,18 @@ def parse_claude(path):
                             delegations.append(inp["prompt"][:MAX_PROMPT_CHARS])
                 if texts:
                     last_reply = "\n".join(texts)
+            if stop_at_copy and prompts:
+                if opening.startswith(COPY_PREFIX):
+                    break
+                stop_at_copy = False
     s = new_session(path, "claude", os.path.basename(path)[:-6], os.path.basename(os.path.dirname(path)))
     s.update(cwd=cwd, branch=branch, entrypoint=entrypoint, start=start, end=end, title=custom_title or title,
              prompts=prompts, delegations=delegations, files=files, prs=prs, last_reply=last_reply, bad_lines=bad_lines, opening=opening)
     return s
+
+
+def index_parse_claude(path):
+    return parse_claude(path, stop_at_copy=True)
 
 
 def list_claude():
@@ -190,19 +199,32 @@ def list_claude():
 
 
 SOURCES = {
-    "claude": {"list": list_claude, "parse": parse_claude, "self_env": "CLAUDE_CODE_SESSION_ID", "resume": "claude --resume {id}"},
+    # index_parse (optional) is a cheaper parse used only for indexing; it may stop early on copies.
+    "claude": {"list": list_claude, "parse": parse_claude, "index_parse": index_parse_claude,
+               "self_env": "CLAUDE_CODE_SESSION_ID", "resume": "claude --resume {id}"},
 }
 
 
-def parse_session(path, agent):
-    return SOURCES[agent]["parse"](path)
+def parse_session(path, agent, for_index=False):
+    source = SOURCES[agent]
+    parse = (for_index and source.get("index_parse")) or source["parse"]
+    return parse(path)
+
+
+def first_request_at(prompts):
+    """A bare slash command such as /model says nothing about the work, so the first request is the first prompt that is not one; a session of only commands keeps its first."""
+    for i, p in enumerate(prompts):
+        if not BARE_COMMAND_RE.fullmatch(p):
+            return i
+    return 0
 
 
 def summarize(s):
+    prompts = s["prompts"]
     return {
         "id": s["id"], "agent": s["agent"], "path": s["path"], "project": s["project"], "cwd": s["cwd"], "branch": s["branch"],
         "entrypoint": s["entrypoint"], "start": s["start"], "end": s["end"], "title": s["title"],
-        "first": s["prompts"][0][:300] if s["prompts"] else "",
+        "first": prompts[first_request_at(prompts)][:300] if prompts else "",
         "last": s["prompts"][-1][:300] if len(s["prompts"]) > 1 else "",
         "n_prompts": len(s["prompts"]), "prs": s["prs"], "bad_lines": s["bad_lines"],
         "auto": s["opening"].startswith(AUTO_PREFIX),
@@ -217,10 +239,12 @@ def weighted_terms(s):
             tf[tok] += w
 
     add(s["title"] or "", W_TITLE)
-    if s["prompts"]:
-        add(s["prompts"][0], W_FIRST)
+    prompts = s["prompts"]
+    first = first_request_at(prompts)
+    if prompts:
+        add(prompts[first], W_FIRST)
     budget = MAX_TEXT_CHARS
-    for p in s["prompts"][1:] + s["delegations"]:
+    for p in prompts[:first] + prompts[first + 1:] + s["delegations"]:
         if budget <= 0:
             break
         add(p[:budget], W_PROMPT)
@@ -234,7 +258,7 @@ def weighted_terms(s):
 
 def index_one(path, agent):
     try:
-        s = parse_session(path, agent)
+        s = parse_session(path, agent, for_index=True)
     except FileNotFoundError:
         return path, None, {}
     if s["opening"].startswith(COPY_PREFIX):
@@ -390,6 +414,7 @@ def refresh(force=False):
             idx.remove(p)
         started = time.time()
         if len(changed) > 8:
+            from concurrent.futures import ProcessPoolExecutor  # ~30ms to import, so only when a pool is actually used
             with ProcessPoolExecutor() as pool:
                 results = list(pool.map(index_one, changed, [current[p][2] for p in changed], chunksize=8))
         else:
