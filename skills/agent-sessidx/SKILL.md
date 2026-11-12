@@ -40,7 +40,7 @@ If nothing useful comes back, try other words: the identifier instead of the Jap
 | Last assistant reply (2k chars) | 1 |
 | Paths of files read or edited | 1 |
 
-Sessions whose first prompt is `<transcript>` are summarizer copies of other sessions and are not indexed. `<scheduled-task>` sessions are indexed but hidden unless `--auto` is passed.
+Sessions whose first prompt is `<transcript>` are summarizer copies of other sessions and are not indexed, even when they quote a slash command. `<scheduled-task>` sessions are indexed but hidden unless `--auto` is passed.
 
 Slash commands are indexed with their arguments. Compaction summaries and subagent hand-backs are not indexed.
 

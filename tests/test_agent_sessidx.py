@@ -110,6 +110,13 @@ class SessionIndexTest(unittest.TestCase):
         self.write("cccc3333", [user("<transcript>\nuser: 請求書の再発行フロー\n</transcript>")])
         self.assertEqual(self.top_ids("再発行フロー"), ["aaaa1111"])
 
+    def test_summarizer_copies_that_open_with_a_slash_command_are_skipped(self):
+        # Most real copies quote a session that began with a slash command, so the copy itself contains <command-name>.
+        self.write("dddd4444", [user("<transcript>\nuser: <command-message>plan</command-message>\n<command-name>/plan</command-name>\n"
+                                     "user: 請求書の再発行フロー\n</transcript>\n\n上記を要約してください")])
+        self.assertEqual(self.top_ids("再発行フロー"), ["aaaa1111"])
+        self.assertEqual(self.top_ids("plan"), ["aaaa1111"])
+
     def test_new_prompts_in_a_live_session_are_searchable_on_the_next_call(self):
         # Reading transcripts directly, with no summarizing step, is what makes the running session searchable at once.
         self.assertEqual(self.top_ids("消費税"), [])
