@@ -254,13 +254,14 @@ def read_lines(path):
     if not how:
         raise OSError("zstd is not available")
     import subprocess
-    proc = subprocess.Popen([how, "-dcq", "--", path], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    with open(path, "rb") as src:  # opened here so a vanished file raises FileNotFoundError like a plain rollout
+        proc = subprocess.Popen([how, "-dcq"], stdin=src, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
     finished = False
     try:
         yield from proc.stdout
         finished = True
     finally:
-        if proc.poll() is None:
+        if not finished and proc.poll() is None:  # after EOF zstd may still be exiting; killing it then would turn success into -9
             proc.kill()
         proc.stdout.close()
         code = proc.wait()

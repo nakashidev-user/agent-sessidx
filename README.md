@@ -42,19 +42,6 @@ cd agent-sessidx
 
 Codex から使うときも `install.sh` で入れます。Codex のホームがあれば、Codex のスキルとしてもリンクします（Codex はシンボリックリンクのスキルも読みます）。
 
-### Codex のセッションで索引に入るもの
-
-| Claude Code | Codex |
-|---|---|
-| カスタムタイトル、AI タイトル | `session_index.jsonl` のスレッド名（最後の行が今の名前） |
-| ユーザーのプロンプト | `UserMessage`（古い形式は `user_message`）。IDE などの文脈ブロックの後の `## My request for Codex:` より後ろだけ |
-| 最後の返答 | 最後の `AgentMessage`（古い形式は `agent_message`） |
-| pr-link | 返答に出てきた `https://github.com/<owner>/<repo>/pull/<番号>` |
-| 読み書きしたファイル | `FileChange` で変えたファイル |
-| プロジェクトのディレクトリ名 | cwd の英数字以外を `-` にしたもの（Claude Code と同じ名前になる） |
-
-他のエージェントから取り込んだスレッド（`external-import-turn-` の依頼で始まるもの）とサブエージェントのスレッドは索引に入れません。ツールの呼び出しと出力、AGENTS.md などの注入、圧縮の履歴も入れません。スレッドの名前を変えても、検索の重みに反映されるのは rollout が変わるか `rebuild` したときです（`show` には今の名前が出ます）。
-
 ## 使い方
 
 次の例は `install.sh` で入れたときのパスです。プラグインで入れたときは `~/.claude/tools/agent-sessidx/` をプラグインの置き場所に読み替えてください。
@@ -75,7 +62,7 @@ python3 -I ~/.claude/tools/agent-sessidx/agent-sessidx.py rebuild
 | `--auto` | `<scheduled-task>` で始まる定期実行のセッションも含める |
 | `--include-self` | 呼び出し元のセッションも結果に残す（呼び出し元は Claude Code の `$CLAUDE_CODE_SESSION_ID` と Codex の `$CODEX_THREAD_ID` で見分ける） |
 
-Claude Code からは、スキル `agent-sessidx`（プラグインで入れたときは `agent-sessidx:agent-sessidx`）として「前にやった？」「前回どうした？」のような場面で呼ばれます。
+Claude Code と Codex からは、スキル `agent-sessidx`（プラグインで入れたときは `agent-sessidx:agent-sessidx`）として「前にやった？」「前回どうした？」のような場面で呼ばれます。
 
 ## 索引について
 
@@ -83,7 +70,7 @@ Claude Code からは、スキル `agent-sessidx`（プラグインで入れた�
 - **索引には全セッションのタイトル・依頼の本文・サブエージェントへの委任文・最後の返答・ファイルパス・cwd・ブランチ・PR URL・transcript のパスが入ります。** 共有したりコミットしたりしないでください。`.gitignore` でも `*.bin` を除外しています。
 - 検索のたびに transcript の更新時刻とサイズを見て、変わったものだけ読み直します。ただし要約用コピーとして索引に載っている transcript は、コピーかどうかが最初の依頼だけで決まり後から変わらないので、更新時刻もサイズも見ません（一覧から消えたら索引からも消します）。読もうとしたときに消えていた transcript は索引に残さず、次の検索でもう一度確かめます。
 - `--include-self` なしの `search` では、呼び出し元のセッション（`$CLAUDE_CODE_SESSION_ID` か `$CODEX_THREAD_ID`）の transcript は変わっていても読み直しません。どうせ結果から外すので、結果は変わりません。読み直しと索引の書き直しは、そのセッションを外さない次の呼び出し（他のセッションからの `search`、`--include-self` 付きの `search`、`show`、`stats`、`rebuild`）に回します。ほかに変わった transcript が無ければ、索引ファイルも書き直しません。
-- 作り直しにかかる時間は、手元の約7,000 transcript（5GB 超）で約5秒でした。
+- 作り直しにかかる時間は、手元の Claude Code の transcript 約8,300本と Codex の rollout 424本（うち `.zst` 419本、展開後 1.07GB）で、Python 3.9（`zstd` コマンドで展開）で約4秒、Python 3.14（標準ライブラリで展開）で約2秒でした。
 
 ## 検索の仕組み
 
@@ -92,6 +79,19 @@ Claude Code からは、スキル `agent-sessidx`（プラグインで入れた�
 - 重みは、タイトル 4、最初の依頼 2、ブランチ・プロジェクト・PR 2、その他の依頼・作業中に送った依頼・サブエージェントへの委任文 1、最後の返答 1、ファイルパス 1 です。
 - 「最初の依頼」は、引数のないスラッシュコマンド（`/model` や `/list-skills` のように、コマンド名だけのもの）を飛ばした最初の依頼です。検索結果の `first:` も重み 2 もこれに付きます。飛ばしたコマンドも依頼の一つとして重み 1 で索引に入り、`show` の prompts にも出ます。コマンドしか無いセッションでは、そのコマンドを最初の依頼にします。
 - `<transcript>` で始まるセッション（他のセッションを要約するために作られたコピー）は索引に入れません。中にスラッシュコマンドを含むコピーも同じです。コピーかどうかは最初の依頼だけで決まるので、索引を作るときはそこで読むのをやめ、残りの行は読みません。
+
+### Codex のセッションで索引に入るもの
+
+| Claude Code | Codex |
+|---|---|
+| カスタムタイトル、AI タイトル | `session_index.jsonl` のスレッド名（最後の行が今の名前） |
+| ユーザーのプロンプト | `UserMessage`（古い形式は `user_message`）。IDE などの文脈ブロックの後の `## My request for Codex:` より後ろだけ |
+| 最後の返答 | 最後の `AgentMessage`（古い形式は `agent_message`） |
+| pr-link | 返答に出てきた `https://github.com/<owner>/<repo>/pull/<番号>` |
+| 読み書きしたファイル | `FileChange` で変えたファイル |
+| プロジェクトのディレクトリ名 | cwd の英数字以外を `-` にしたもの（Claude Code と同じ名前になる） |
+
+他のエージェントから取り込んだスレッド（`external-import-turn-` の依頼で始まるもの）とサブエージェントのスレッドは索引に入れません。どちらも先頭だけで決まるので、要約用コピーと同じく途中で読むのをやめ、以後は更新時刻もサイズも見ません。ツールの呼び出しと出力、AGENTS.md などの注入、圧縮の履歴も入れません。スレッドの名前を変えても、検索の重みに反映されるのは rollout が変わるか `rebuild` したときです（`show` には今の名前が出ます）。
 
 ## テスト
 
