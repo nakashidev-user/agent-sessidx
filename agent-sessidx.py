@@ -12,8 +12,9 @@ import unicodedata
 from array import array
 from collections import Counter
 
-VERSION = 8
+VERSION = 9
 CLAUDE_PROJECTS = os.path.expanduser("~/.claude/projects")
+CODEX_HOME = os.environ.get("CODEX_HOME") or os.path.expanduser("~/.codex")
 INDEX_DIR = os.path.expanduser("~/.claude/agent-sessidx")
 INDEX_PATH = os.path.join(INDEX_DIR, f"index-v{VERSION}.bin")  # per version, so installs of different versions never overwrite each other's index
 LOCK_PATH = os.path.join(INDEX_DIR, "lock")
@@ -99,9 +100,11 @@ def worth_parsing(line):
 
 
 def new_session(path, agent, session_id, project):
+    """not_own: the file is not a session of its own (a summarizer copy, an import, a subagent thread) and is kept out of the index.
+    auto: a scheduled-task session, left out of results unless asked for."""
     return {"id": session_id, "agent": agent, "path": path, "project": project, "cwd": None, "branch": None,
             "entrypoint": None, "start": None, "end": None, "title": None, "prompts": [], "delegations": [],
-            "files": Counter(), "prs": [], "last_reply": "", "bad_lines": 0, "opening": ""}
+            "files": Counter(), "prs": [], "last_reply": "", "bad_lines": 0, "not_own": False, "auto": False}
 
 
 def parse_claude(path, stop_at_copy=False):
@@ -176,7 +179,8 @@ def parse_claude(path, stop_at_copy=False):
                 stop_at_copy = False
     s = new_session(path, "claude", os.path.basename(path)[:-6], os.path.basename(os.path.dirname(path)))
     s.update(cwd=cwd, branch=branch, entrypoint=entrypoint, start=start, end=end, title=custom_title or title,
-             prompts=prompts, delegations=delegations, files=files, prs=prs, last_reply=last_reply, bad_lines=bad_lines, opening=opening)
+             prompts=prompts, delegations=delegations, files=files, prs=prs, last_reply=last_reply, bad_lines=bad_lines,
+             not_own=opening.startswith(COPY_PREFIX), auto=opening.startswith(AUTO_PREFIX))
     return s
 
 
@@ -197,10 +201,223 @@ def list_claude():
                         yield e.path
 
 
+def codex_dirs():
+    return [os.path.join(CODEX_HOME, d) for d in ("sessions", "archived_sessions")]
+
+
+def walk_codex():
+    for top in codex_dirs():
+        for root, _, names in os.walk(top):
+            for n in names:
+                if n.startswith("rollout-") and (n.endswith(".jsonl") or n.endswith(".jsonl.zst")):
+                    yield os.path.join(root, n)
+
+
+_zstd_state = []
+
+
+def zstd_reader():
+    """'module' when compression.zstd (Python 3.14+) is there, else the path of the zstd command, else None."""
+    if not _zstd_state:
+        try:
+            import compression.zstd  # noqa: F401
+            _zstd_state.append("module")
+        except ImportError:
+            import shutil
+            _zstd_state.append(shutil.which("zstd"))
+    return _zstd_state[0]
+
+
+def list_codex():
+    can_unzstd = None
+    for path in walk_codex():
+        if path.endswith(".zst"):
+            if can_unzstd is None:
+                can_unzstd = bool(zstd_reader())
+            if not can_unzstd:
+                continue
+        yield path
+
+
+def read_lines(path):
+    """Yields the raw lines of a rollout, decompressing .zst as a stream. Raises OSError/ValueError if decompression fails midway."""
+    if not path.endswith(".zst"):
+        with open(path, "rb") as f:
+            yield from f
+        return
+    how = zstd_reader()
+    if how == "module":
+        from compression import zstd
+        with zstd.open(path, "rb") as f:
+            yield from f
+        return
+    if not how:
+        raise OSError("zstd is not available")
+    import subprocess
+    proc = subprocess.Popen([how, "-dcq", "--", path], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    finished = False
+    try:
+        yield from proc.stdout
+        finished = True
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+        proc.stdout.close()
+        code = proc.wait()
+    if finished and code != 0:
+        raise OSError(f"zstd exited with {code}")
+
+
+_codex_titles = {}
+
+
+def codex_titles():
+    """Thread names from session_index.jsonl, the last line for an id winning; re-read whenever the file changes."""
+    path = os.path.join(CODEX_HOME, "session_index.jsonl")
+    try:
+        st = os.stat(path)
+    except OSError:
+        return {}
+    key = (path, st.st_mtime_ns, st.st_size)
+    if key not in _codex_titles:
+        names = {}
+        with open(path, "rb") as f:
+            for raw in f:
+                try:
+                    d = json.loads(raw)
+                except ValueError:
+                    continue
+                if isinstance(d, dict) and isinstance(d.get("id"), str) and d.get("thread_name"):
+                    names[d["id"]] = d["thread_name"]
+        _codex_titles.clear()
+        _codex_titles[key] = names
+    return _codex_titles[key]
+
+
+CODEX_MARKERS = (b'"session_meta"', b'"UserMessage"', b'"AgentMessage"', b'"FileChange"', b'"user_message"', b'"agent_message"')
+CODEX_REQUEST_RE = re.compile(r"^## My request(?: for Codex)?:[ \t]*$", re.M)
+PR_URL_RE = re.compile(r"https://github\.com/[\w.-]+/[\w.-]+/pull/\d+")
+UUID_TAIL_RE = re.compile(r"([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\.jsonl(?:\.zst)?$")
+IMPORT_TURN_PREFIX = "external-import-turn-"
+
+
+def codex_request(text):
+    """Codex Desktop and the IDE extensions put context blocks before the request; keep only what follows the last request heading."""
+    marks = list(CODEX_REQUEST_RE.finditer(text))
+    if marks:
+        tail = text[marks[-1].end():].strip()
+        if tail:
+            text = tail
+    return text.strip()[:MAX_PROMPT_CHARS]
+
+
+def project_of_cwd(cwd):
+    return re.sub(r"[^A-Za-z0-9]", "-", cwd) if cwd else ""
+
+
+def parse_codex(path, for_index=False):
+    """for_index stops reading once the rollout is known to be a subagent thread or an import; the index needs nothing else from it."""
+    sid = cwd = branch = entrypoint = start = end = None
+    prompts, replies, files = [], [], Counter()
+    bad_lines = 0
+    not_own = False
+    seen_user = False
+    lines = read_lines(path)
+    try:
+        for raw in lines:
+            if not any(m in raw for m in CODEX_MARKERS):
+                continue
+            try:
+                d = json.loads(raw)
+            except ValueError:
+                bad_lines += 1
+                continue
+            if not isinstance(d, dict):
+                continue
+            kind, p = d.get("type"), d.get("payload")
+            if not isinstance(p, dict):
+                continue
+            ts = d.get("timestamp")
+            if ts:
+                start = start or ts
+                end = ts
+            if kind == "session_meta":
+                sid = sid or p.get("id")
+                cwd = cwd or p.get("cwd")
+                branch = branch or (p.get("git") or {}).get("branch")
+                src = p.get("source")
+                if isinstance(src, str):
+                    entrypoint = entrypoint or src
+                elif isinstance(src, dict) and "subagent" in src:
+                    not_own = True
+                    if for_index:
+                        break
+                continue
+            if kind != "event_msg":
+                continue
+            ptype = p.get("type")
+            if ptype == "user_message" and isinstance(p.get("message"), str):
+                seen_user = True
+                text = codex_request(p["message"])
+                if text:
+                    prompts.append(text)
+            elif ptype == "agent_message" and isinstance(p.get("message"), str):
+                replies.append(p["message"])
+            elif ptype == "item_completed":
+                item = p.get("item") or {}
+                itype = item.get("type")
+                if itype == "UserMessage":
+                    if not seen_user and str(p.get("turn_id") or "").startswith(IMPORT_TURN_PREFIX):
+                        not_own = True
+                        if for_index:
+                            break
+                    seen_user = True
+                    text = codex_request("\n".join(c.get("text", "") for c in item.get("content") or []
+                                                   if isinstance(c, dict) and c.get("type") == "text"))
+                    if text:
+                        prompts.append(text)
+                elif itype == "AgentMessage":
+                    replies.append("\n".join(c.get("text", "") for c in item.get("content") or [] if isinstance(c, dict)))
+                elif itype == "FileChange":
+                    for fp in item.get("changes") or {}:
+                        files[fp] += 1
+    except FileNotFoundError:
+        raise
+    except Exception:
+        bad_lines += 1  # a broken compressed stream; keep what was read
+    finally:
+        lines.close()  # stops and reaps the zstd process when reading ends early
+    if not sid:
+        m = UUID_TAIL_RE.search(os.path.basename(path))
+        sid = m.group(1) if m else os.path.basename(path)
+    prs = []
+    for r in replies:
+        for url in PR_URL_RE.findall(r):
+            if url not in prs:
+                prs.append(url)
+    s = new_session(path, "codex", sid, project_of_cwd(cwd))
+    s.update(cwd=cwd, branch=branch, entrypoint=entrypoint, start=start, end=end, title=codex_titles().get(sid),
+             prompts=prompts, files=files, prs=prs, last_reply=replies[-1] if replies else "", bad_lines=bad_lines, not_own=not_own)
+    return s
+
+
+def index_parse_codex(path):
+    return parse_codex(path, for_index=True)
+
+
+def codex_rollouts_left_out():
+    """Number of .zst rollouts that cannot be read on this machine."""
+    if zstd_reader():
+        return 0
+    return sum(1 for p in walk_codex() if p.endswith(".zst"))
+
+
 SOURCES = {
-    # index_parse (optional) is a cheaper parse used only for indexing; it may stop early on copies.
+    # index_parse (optional) is a cheaper parse used only for indexing; it may stop early on files that are not sessions of their own.
     "claude": {"list": list_claude, "parse": parse_claude, "index_parse": index_parse_claude,
                "self_env": "CLAUDE_CODE_SESSION_ID", "resume": "claude --resume {id}"},
+    "codex": {"list": list_codex, "parse": parse_codex, "index_parse": index_parse_codex,
+              "self_env": "CODEX_THREAD_ID", "resume": "codex resume {id}"},
 }
 
 
@@ -226,7 +443,7 @@ def summarize(s):
         "first": prompts[first_request_at(prompts)][:300] if prompts else "",
         "last": s["prompts"][-1][:300] if len(s["prompts"]) > 1 else "",
         "n_prompts": len(s["prompts"]), "prs": s["prs"], "bad_lines": s["bad_lines"],
-        "auto": s["opening"].startswith(AUTO_PREFIX),
+        "auto": bool(s.get("auto")),
     }
 
 
@@ -260,7 +477,7 @@ def index_one(path, agent):
         s = parse_session(path, agent, for_index=True)
     except FileNotFoundError:
         return path, None, None  # not recorded at all, so a file that later appears at this path is read on the next refresh
-    if s["opening"].startswith(COPY_PREFIX):
+    if s.get("not_own"):
         return path, None, {}
     return path, summarize(s), dict(weighted_terms(s))
 
@@ -410,7 +627,8 @@ def session_id_of(idx, path):
     entry = idx.files.get(path)
     if entry is not None and entry[2] >= 0 and idx.docs[entry[2]] is not None:
         return idx.docs[entry[2]]["id"]
-    return os.path.splitext(os.path.basename(path))[0]
+    m = UUID_TAIL_RE.search(os.path.basename(path))
+    return m.group(1) if m else os.path.splitext(os.path.basename(path))[0]
 
 
 def refresh(force=False, skip_ids=()):
@@ -575,6 +793,9 @@ def stats(idx):
     print("agents: " + "  ".join(f"{a}={n}" for a, n in Counter(m["agent"] for m in live).most_common()))
     for proj, n in Counter(m["project"] for m in live).most_common(10):
         print(f"  {n:5d} {proj}")
+    missing = codex_rollouts_left_out()
+    if missing:
+        print(f"codex: {missing} .zst rollouts are not indexed because zstd is unavailable (install zstd or run with Python 3.14+)")
 
 
 def calling_session_ids():
@@ -583,7 +804,7 @@ def calling_session_ids():
 
 
 def main():
-    ap = argparse.ArgumentParser(prog="agent-sessidx", description="Search past coding-agent sessions (currently Claude Code) by what was done in them.")
+    ap = argparse.ArgumentParser(prog="agent-sessidx", description="Search past coding-agent sessions (Claude Code and Codex) by what was done in them.")
     sub = ap.add_subparsers(dest="cmd", required=True)
     s = sub.add_parser("search")
     s.add_argument("query", nargs="+")

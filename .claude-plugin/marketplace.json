@@ -1,14 +1,14 @@
 {
   "name": "agent-sessidx",
-  "description": "agent-sessidx, a local search over past Claude Code sessions",
+  "description": "agent-sessidx, a local search over past Claude Code and Codex sessions",
   "owner": {
     "name": "nakashidev-user"
   },
   "plugins": [
     {
       "name": "agent-sessidx",
-      "description": "Search past Claude Code session transcripts by what was asked and done",
-      "version": "0.1.0",
+      "description": "Search past Claude Code and Codex sessions by what was asked and done",
+      "version": "0.2.0",
       "source": "./",
       "category": "productivity",
       "homepage": "https://github.com/nakashidev-user/agent-sessidx"
