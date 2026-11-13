@@ -7,7 +7,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -433,6 +433,34 @@ class SessionIndexTest(unittest.TestCase):
         finally:
             sys.argv = argv
         self.assertEqual(out.getvalue().strip(), "no match")
+
+    @unittest.skipIf(os.geteuid() == 0, "root ignores file permissions")
+    def test_search_still_answers_where_the_index_cannot_be_saved(self):
+        # Codex's default sandbox lets commands read ~/.claude but not write to it; a search run from Codex must still answer.
+        S.refresh()
+        index = Path(S.INDEX_PATH)
+        before = index.read_bytes()
+        self.write("bbbb2222", [user("消費税の端数処理も確認して")], mode="a")
+        os.chmod(S.LOCK_PATH, 0o400)
+        os.chmod(S.INDEX_DIR, 0o500)
+        try:
+            with redirect_stderr(io.StringIO()):
+                self.assertEqual(self.top_ids("消費税"), ["bbbb2222"])
+        finally:
+            os.chmod(S.INDEX_DIR, 0o700)
+            os.chmod(S.LOCK_PATH, 0o600)
+        self.assertEqual(index.read_bytes(), before)
+
+    def test_a_malformed_codex_record_does_not_lose_the_rest_of_the_rollout(self):
+        # One odd record must cost that record only, not every request after it.
+        self.write_codex(CX, [
+            codex_meta(CX),
+            codex_user("決済Webhookの署名検証を追加して"),
+            codex_item({"type": "AgentMessage", "id": "item-2", "content": [{"type": "Text", "text": None}]}, "turn-1"),
+            codex_item("not an item", "turn-1"),
+            codex_user("リトライ時の冪等キーも確認して", turn="turn-2"),
+        ])
+        self.assertEqual(self.top_ids("冪等キー"), [CX])
 
     def test_show_prints_a_codex_session(self):
         # show is what an agent reads before relying on a past Codex session, and it must say how to resume it.

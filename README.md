@@ -40,7 +40,9 @@ cd agent-sessidx
 | `~/.claude/skills/agent-sessidx` | `skills/agent-sessidx` |
 | `${CODEX_HOME:-~/.codex}/skills/agent-sessidx`（そのディレクトリがあるときだけ） | `skills/agent-sessidx` |
 
-Codex から使うときも `install.sh` で入れます。Codex のホームがあれば、Codex のスキルとしてもリンクします（Codex はシンボリックリンクのスキルも読みます）。
+Codex から使うときも `install.sh` で入れます。Codex のホームがあれば、Codex のスキルとしてもリンクします（Codex はシンボリックリンクのスキルも読みます）。プラグインには Codex 用のリンクが無いので、プラグインへ移った後も Codex から使うなら、clone と Codex 側のリンクは残してください。
+
+Codex の既定のサンドボックスでは `~/.claude/agent-sessidx` に書き込めません。そこから呼んでも検索はでき、前回保存された索引に、それ以降に変わった分をメモリ上で足して答えます（索引は保存せず、stderr にその旨を出します）。保存された索引がまだ無いと、毎回すべての transcript を読み直すので数秒かかります。Claude Code から一度使うか、サンドボックスの外で `rebuild` すれば、以後は差分だけになります。Codex からも索引を保存させたいときは、Codex の設定の `sandbox_workspace_write.writable_roots` にこのディレクトリを足します。
 
 ## 使い方
 

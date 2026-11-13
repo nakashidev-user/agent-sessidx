@@ -18,6 +18,8 @@ python3 -I "${CLAUDE_SKILL_DIR}/../../agent-sessidx.py" rebuild
 
 Outside Claude Code (for example in Codex) `${CLAUDE_SKILL_DIR}` is not set; replace it with the directory that contains this SKILL.md.
 
+Inside Codex's default sandbox the index directory is read-only. The commands still work: they refresh the index in memory, leave it unsaved, and print a note on stderr. Do not ask for escalated permissions just for that.
+
 ## How to use it
 
 1. Run `search` with the distinctive words of the task, such as feature names, table or column names, PR numbers, branch fragments and file names. Japanese and English can be mixed. Particles inside a phrase are ignored, so put the nouns in. A word written only in hiragana, such as いいね, still counts.

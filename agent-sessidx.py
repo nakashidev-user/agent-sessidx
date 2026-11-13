@@ -240,7 +240,7 @@ def list_codex():
 
 
 def read_lines(path):
-    """Yields the raw lines of a rollout, decompressing .zst as a stream. Raises OSError/ValueError if decompression fails midway."""
+    """Yields the raw lines of a rollout, decompressing .zst as a stream. Raises OSError if decompression fails midway."""
     if not path.endswith(".zst"):
         with open(path, "rb") as f:
             yield from f
@@ -248,8 +248,11 @@ def read_lines(path):
     how = zstd_reader()
     if how == "module":
         from compression import zstd
-        with zstd.open(path, "rb") as f:
-            yield from f
+        try:
+            with zstd.open(path, "rb") as f:
+                yield from f
+        except (zstd.ZstdError, EOFError) as e:  # a corrupt or truncated stream, reported the same way as the zstd command's failure
+            raise OSError(f"zstd: {e}") from e
         return
     if not how:
         raise OSError("zstd is not available")
@@ -298,7 +301,7 @@ def codex_titles():
 CODEX_MARKERS = (b'"session_meta"', b'"UserMessage"', b'"AgentMessage"', b'"FileChange"', b'"user_message"', b'"agent_message"')
 CODEX_REQUEST_RE = re.compile(r"^## My request(?: for Codex)?:[ \t]*$", re.M)
 PR_URL_RE = re.compile(r"https://github\.com/[\w.-]+/[\w.-]+/pull/\d+")
-UUID_TAIL_RE = re.compile(r"([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\.jsonl(?:\.zst)?$")
+UUID_RE = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
 IMPORT_TURN_PREFIX = "external-import-turn-"
 
 
@@ -312,6 +315,18 @@ def codex_request(text):
     return text.strip()[:MAX_PROMPT_CHARS]
 
 
+def codex_text(content, kind=None):
+    return "\n".join(c["text"] for c in content if isinstance(c, dict) and isinstance(c.get("text"), str)
+                     and (kind is None or c.get("type") == kind)) if isinstance(content, list) else ""
+
+
+def id_from_name(path):
+    """The first UUID in the file name: Claude's <id>.jsonl, and Codex's rollout-<time>-<id>[_<page>].jsonl[.zst]."""
+    name = os.path.basename(path)
+    m = UUID_RE.search(name)
+    return m.group() if m else name.split(".", 1)[0]
+
+
 def project_of_cwd(cwd):
     return re.sub(r"[^A-Za-z0-9]", "-", cwd) if cwd else ""
 
@@ -320,6 +335,7 @@ def parse_codex(path, for_index=False):
     """for_index stops reading once the rollout is known to be a subagent thread or an import; the index needs nothing else from it."""
     sid = cwd = branch = entrypoint = start = end = None
     prompts, replies, files = [], [], Counter()
+    old_prompts, old_replies = [], []  # rollouts not yet migrated to item events; used only when a file has no item events
     bad_lines = 0
     not_own = False
     seen_user = False
@@ -345,7 +361,8 @@ def parse_codex(path, for_index=False):
             if kind == "session_meta":
                 sid = sid or p.get("id")
                 cwd = cwd or p.get("cwd")
-                branch = branch or (p.get("git") or {}).get("branch")
+                git = p.get("git")
+                branch = branch or (git.get("branch") if isinstance(git, dict) else None)
                 src = p.get("source")
                 if isinstance(src, str):
                     entrypoint = entrypoint or src
@@ -358,14 +375,13 @@ def parse_codex(path, for_index=False):
                 continue
             ptype = p.get("type")
             if ptype == "user_message" and isinstance(p.get("message"), str):
-                seen_user = True
                 text = codex_request(p["message"])
                 if text:
-                    prompts.append(text)
+                    old_prompts.append(text)
             elif ptype == "agent_message" and isinstance(p.get("message"), str):
-                replies.append(p["message"])
-            elif ptype == "item_completed":
-                item = p.get("item") or {}
+                old_replies.append(p["message"])
+            elif ptype == "item_completed" and isinstance(p.get("item"), dict):
+                item = p["item"]
                 itype = item.get("type")
                 if itype == "UserMessage":
                     if not seen_user and str(p.get("turn_id") or "").startswith(IMPORT_TURN_PREFIX):
@@ -373,24 +389,23 @@ def parse_codex(path, for_index=False):
                         if for_index:
                             break
                     seen_user = True
-                    text = codex_request("\n".join(c.get("text", "") for c in item.get("content") or []
-                                                   if isinstance(c, dict) and c.get("type") == "text"))
+                    text = codex_request(codex_text(item.get("content"), "text"))
                     if text:
                         prompts.append(text)
                 elif itype == "AgentMessage":
-                    replies.append("\n".join(c.get("text", "") for c in item.get("content") or [] if isinstance(c, dict)))
-                elif itype == "FileChange":
-                    for fp in item.get("changes") or {}:
+                    replies.append(codex_text(item.get("content")))
+                elif itype == "FileChange" and isinstance(item.get("changes"), dict):
+                    for fp in item["changes"]:
                         files[fp] += 1
     except FileNotFoundError:
         raise
-    except Exception:
+    except OSError:
         bad_lines += 1  # a broken compressed stream; keep what was read
     finally:
         lines.close()  # stops and reaps the zstd process when reading ends early
-    if not sid:
-        m = UUID_TAIL_RE.search(os.path.basename(path))
-        sid = m.group(1) if m else os.path.basename(path)
+    if not prompts and not replies:
+        prompts, replies = old_prompts, old_replies
+    sid = sid or id_from_name(path)
     prs = []
     for r in replies:
         for url in PR_URL_RE.findall(r):
@@ -628,16 +643,26 @@ def session_id_of(idx, path):
     entry = idx.files.get(path)
     if entry is not None and entry[2] >= 0 and idx.docs[entry[2]] is not None:
         return idx.docs[entry[2]]["id"]
-    m = UUID_TAIL_RE.search(os.path.basename(path))
-    return m.group(1) if m else os.path.splitext(os.path.basename(path))[0]
+    return id_from_name(path)
+
+
+def open_lock():
+    """The locked lock file, or None where the index dir cannot be written, as inside Codex's default sandbox;
+    the index is then refreshed in memory only."""
+    try:
+        os.makedirs(INDEX_DIR, exist_ok=True)
+        lock = open(LOCK_PATH, "w")
+    except OSError:
+        return None
+    fcntl.flock(lock, fcntl.LOCK_EX)
+    return lock
 
 
 def refresh(force=False, skip_ids=()):
     """skip_ids names sessions whose changes are left for a later call (a search that excludes the caller's own session
     gets the same results from a stale entry); they are neither re-read nor added now."""
-    os.makedirs(INDEX_DIR, exist_ok=True)
-    with open(LOCK_PATH, "w") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
+    lock = open_lock()
+    try:
         idx = Index() if force else load_index()
         current = list_sessions(idx.files)
         changed = [p for p, key in current.items() if tuple(idx.files.get(p, (None, None))[:2]) != key[:2]]
@@ -660,13 +685,20 @@ def refresh(force=False, skip_ids=()):
                 idx.add(path, current[path][:2], meta, tf)
         if idx.docs and (len(idx.docs) - idx.live) / len(idx.docs) > COMPACT_RATIO:
             idx = idx.compact()
-        save_index(idx)
+        if lock:
+            save_index(idx)
+        else:
+            print(f"note: {INDEX_DIR} is not writable here, so the index was refreshed in memory without saving it "
+                  f"({len(changed)} transcripts re-read)", file=sys.stderr)
         if len(changed) > 8:
             print(f"indexed {len(changed)} sessions in {time.time() - started:.1f}s", file=sys.stderr)
         empty = sum(1 for _, meta, _ in results if meta is not None and meta["n_prompts"] == 0)
         if len(results) >= 10 and empty / len(results) > 0.5:
             print(f"warning: {empty}/{len(results)} re-indexed sessions have no prompts; the transcript format may have changed", file=sys.stderr)
         return idx
+    finally:
+        if lock:
+            lock.close()
 
 
 def epoch(ts):
@@ -790,7 +822,7 @@ def stats(idx):
     no_prompts = sum(1 for m in live if m["n_prompts"] == 0)
     bad = sum(m["bad_lines"] for m in live)
     print(f"sessions: {idx.live}  tombstones: {len(idx.docs) - idx.live}  terms: {len(idx.postings)}  index: {size / 1048576:.1f}MB")
-    print(f"skipped transcript copies: {copies}  sessions without prompts: {no_prompts}  unparsable lines: {bad}")
+    print(f"skipped (copies, imports, subagent threads): {copies}  sessions without prompts: {no_prompts}  unparsable lines: {bad}")
     print("agents: " + "  ".join(f"{a}={n}" for a, n in Counter(m["agent"] for m in live).most_common()))
     for proj, n in Counter(m["project"] for m in live).most_common(10):
         print(f"  {n:5d} {proj}")
