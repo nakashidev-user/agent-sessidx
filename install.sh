@@ -7,6 +7,10 @@ links=(
   "$repo|$claude_dir/tools/agent-sessidx"
   "$repo/skills/agent-sessidx|$claude_dir/skills/agent-sessidx"
 )
+codex_dir="${CODEX_HOME:-$HOME/.codex}"
+if [ -d "$codex_dir" ]; then
+  links+=("$repo/skills/agent-sessidx|$codex_dir/skills/agent-sessidx")
+fi
 
 for pair in "${links[@]}"; do
   target="${pair%%|*}" path="${pair#*|}"
